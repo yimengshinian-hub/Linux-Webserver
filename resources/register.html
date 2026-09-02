@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>注册</title>
+    <style>
+        body { font-family: Arial; display: flex; justify-content: center; align-items: center; height: 100vh; background: #f0f2f5; }
+        .container { background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); width: 300px; }
+        h2 { text-align: center; color: #333; }
+        input { width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ddd; border-radius: 5px; }
+        button { width: 100%; padding: 10px; background: #42b72a; color: white; border: none; border-radius: 5px; cursor: pointer; }
+        button:hover { background: #36a420; }
+        .link { text-align: center; margin-top: 10px; }
+        .link a { color: #1877f2; text-decoration: none; }
+        .message { color: green; text-align: center; }
+        .error { color: red; text-align: center; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2> 注册</h2>
+        <div id="message" class="message"></div>
+        <div id="error" class="error"></div>
+        <form id="registerForm">
+            <input type="text" id="username" placeholder="用户名" required>
+            <input type="password" id="password" placeholder="密码" required>
+            <button type="submit">注册</button>
+        </form>
+        <div class="link">
+            <a href="/login.html">已有账号？去登录</a>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('registerForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            
+            try {
+                const response = await fetch(`/register?username=${username}&password=${password}`);
+                const text = await response.text();
+                document.getElementById('message').textContent = text;
+                document.getElementById('error').textContent = '';
+            } catch (error) {
+                document.getElementById('error').textContent = '注册失败，请重试';
+            }
+        });
+    </script>
+</body>
+</html>
