@@ -26,12 +26,14 @@ const unordered_map<string, string> HttpResponse::SUFFIX_TYPE = {
 const unordered_map<int, string> HttpResponse::CODE_STATUS = {
     { 200, "OK" },
     { 400, "Bad Request" },
+    { 401, "Unauthorized" }, // === 新增 ===
     { 403, "Forbidden" },
     { 404, "Not Found" },
 };
 
 const unordered_map<int, string> HttpResponse::CODE_PATH = {
     { 400, "/400.html" },
+    { 401, "/error.html" }, // === 新增：复用现有的 error.html ===
     { 403, "/403.html" },
     { 404, "/404.html" },
 };
@@ -56,6 +58,28 @@ void HttpResponse::Init(const string& srcDir,string& path,bool isKeepAlive,int c
     mmFileStat_ = { 0 };
 }
 void HttpResponse::MakeResponse(Buffer& buff){
+    // 如果是 API 请求，走我们自己的 JSON 逻辑
+    if (path_.rfind("/api/", 0) == 0) {
+        std::unordered_map<std::string, std::string> query;
+        size_t qPos = path_.find('?');
+        if (qPos != std::string::npos) {
+            std::string qStr = path_.substr(qPos + 1);
+            size_t start = 0;
+            while (start < qStr.size()) {
+                size_t amp = qStr.find('&', start);
+                std::string pair = (amp == std::string::npos) ? qStr.substr(start) : qStr.substr(start, amp - start);
+                size_t eq = pair.find('=');
+                if (eq != std::string::npos) {
+                    query[pair.substr(0, eq)] = pair.substr(eq + 1);
+                }
+                if (amp == std::string::npos) break;
+                start = amp + 1;
+            }
+        }
+        path_ = path_.substr(0, qPos);
+        MakeApiResponse_(buff, path_, query);
+        return;
+    }
     //判断请求的资源文件,stat是将资源文件的状态码放入mmFileStat_中,<0代表stat失败
     if(stat((srcDir_ + path_).data(),&mmFileStat_) < 0 ||  S_ISDIR(mmFileStat_.st_mode)){//S_ISDIR判断是否是一个目录
         code_ = 404;
@@ -95,6 +119,8 @@ void HttpResponse::AddStateLine_(Buffer& buff){
     buff.Append("HTTP/1.1" + to_string(code_) + " " + status + "\r\n");//向缓冲区添加状态行
 }
 void HttpResponse::AddHeader_(Buffer& buff){
+    // 新增：告诉浏览器不要缓存，每次都要向服务器请求最新的 
+    buff.Append("Cache-Control: no-store\r\n"); 
     buff.Append("Connection: ");
     if(isKeepAlive_){
         buff.Append("keep-alive\r\n");
@@ -158,4 +184,41 @@ void HttpResponse::ErrorContent(Buffer& buff,string message){
 
     buff.Append("Content-length: " + to_string(body.size()) + "\r\n\r\n");
     buff.Append(body);
+}
+//API具体的处理逻辑
+void HttpResponse::MakeApiResponse_(Buffer& buff, const std::string& path, const std::unordered_map<std::string, std::string>& query) {
+    code_ = 200;
+    std::string jsonBody;
+
+    if (path == "/api/sysinfo") {
+        // 系统监控数据：调用 sysmonitor 模块获取
+        jsonBody = SysMonitor::ToJson();
+    } else if (path == "/api/gpio") {
+        int pin = 48; // 假设引脚48，板子上再改
+        std::string action = "";
+        if (query.count("action")) action = query.at("action");
+
+        if (action == "on") {
+            GpioCtl::Init(pin);
+            bool ok = GpioCtl::SetLed(pin, true);
+            jsonBody = ok ? "{\"status\":\"ok\",\"led\":\"on\"}" : "{\"status\":\"error\",\"msg\":\"gpio write failed\"}";
+        } else if (action == "off") {
+            bool ok = GpioCtl::SetLed(pin, false);
+            jsonBody = ok ? "{\"status\":\"ok\",\"led\":\"off\"}" : "{\"status\":\"error\",\"msg\":\"gpio write failed\"}";
+        } else {
+            jsonBody = "{\"status\":\"error\",\"msg\":\"invalid action\"}";
+        }
+    } else {
+        code_ = 404;
+        jsonBody = "{\"status\":\"error\",\"msg\":\"api not found\"}";
+    }
+
+    // 拼装 HTTP 响应头与 JSON 实体
+    std::string status = (code_ == 200) ? "OK" : "Not Found";
+    buff.Append("HTTP/1.1 " + std::to_string(code_) + " " + status + "\r\n");
+    buff.Append("Content-Type: application/json\r\n");
+    buff.Append("Content-Length: " + std::to_string(jsonBody.size()) + "\r\n");
+    buff.Append("Access-Control-Allow-Origin: *\r\n"); // 允许跨域
+    buff.Append("Connection: close\r\n\r\n");
+    buff.Append(jsonBody);
 }

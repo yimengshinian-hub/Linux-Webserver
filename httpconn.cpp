@@ -87,7 +87,9 @@ bool HttpConn::process(){
     }
     else if(request_.parse(readBuff_)){//解析读到的数据
         LOG_DEBUG("%s",request_.path().c_str());
-        response_.Init(srcDir,request_.path(),request_.IsKeepAlive(),200);
+        // === 修改处：如果路径变成了 /error.html，说明验证失败，返回 401 ===
+        int code = (request_.path() == "/error.html") ? 401 : 200; 
+        response_.Init(srcDir, request_.path(), request_.IsKeepAlive(), code);
     }
     else{
         response_.Init(srcDir,request_.path(),false,400);

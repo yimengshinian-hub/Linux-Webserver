@@ -7,9 +7,21 @@ WebServer::WebServer(int port,int trigMode,int timeoutMs,bool OptLinger,
                     port_(port),openLinger_(OptLinger),timeoutMs_(timeoutMs),isClose_(false),
                     timer_(new HeapTimer()),threadpool_(new ThreadPool(threadNum)),epoller_(new Epoller())
     {
-        srcDir_ = getcwd(nullptr,256);//获取当前目录位置
+        // 获取当前运行目录
+        srcDir_ = getcwd(nullptr, 256);
         assert(srcDir_);
-        strcat(srcDir_,"/resources/");//将resources添加到srcDir末尾
+        std::string pathStr(srcDir_);
+
+        // 自动向上层目录探测 resources 文件夹
+        // 如果当前目录下没有，就退到上一级找
+        if (pathStr.find("build_x86") != std::string::npos) {
+            // 如果路径里带有 build_x86，说明我们在子目录里
+            strcat(srcDir_, "/../resources/");
+        } 
+        else {
+            // 否则，默认在当前目录下找
+            strcat(srcDir_, "/resources/");
+        }
         HttpConn::userCount = 0;
         HttpConn::srcDir = srcDir_;
         //初始化操作：

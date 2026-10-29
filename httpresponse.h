@@ -5,6 +5,9 @@
 #include<unistd.h> //close
 #include<sys/stat.h> //stat,用于检查文件的状态
 #include<sys/mman.h> //用于内存映射
+#include "sysmonitor.h"
+#include "gpioctl.h"
+#include <unordered_map>
 #include"buffer.h"
 #include"log.h"
 
@@ -20,6 +23,8 @@ public:
     size_t FileLen() const;
     void ErrorContent(Buffer& buff,std::string message);
     int Code() const {return code_;}
+    // 处理 API 请求并返回 JSON
+    void MakeApiResponse_(Buffer& buff, const std::string& path, const std::unordered_map<std::string, std::string>& query);
 private:
     void AddStateLine_(Buffer& buff);//状态行
     void AddHeader_(Buffer& buff);//头部

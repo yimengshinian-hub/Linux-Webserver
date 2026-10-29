@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>系统监控面板</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+        .cards { display: flex; gap: 16px; margin-bottom: 20px; }
+        .card {
+            background: white; padding: 20px; border-radius: 12px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1); min-width: 160px; text-align: center;
+        }
+        .card .label { font-size: 13px; color: #888; margin-bottom: 8px; }
+        .card .value { font-size: 28px; font-weight: bold; color: #333; }
+        .card .unit { font-size: 14px; color: #aaa; }
+        #chartCanvas { background: white; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .controls { margin-top: 20px; display: flex; gap: 12px; }
+        .btn {
+            padding: 10px 24px; border: none; border-radius: 8px;
+            font-size: 14px; cursor: pointer; color: white; transition: opacity 0.2s;
+        }
+        .btn:hover { opacity: 0.85; }
+        .btn-on { background: #4CAF50; }
+        .btn-off { background: #f44336; }
+        .status-msg { margin-top: 12px; font-size: 14px; color: #666; }
+    </style>
+</head>
+<body>
+    <h1>系统监控面板</h1>
+
+    <div class="cards">
+        <div class="card">
+            <div class="label">CPU 温度</div>
+            <div class="value" id="tempValue">--</div>
+            <div class="unit">°C</div>
+        </div>
+        <div class="card">
+            <div class="label">内存使用率</div>
+            <div class="value" id="memValue">--</div>
+            <div class="unit">%</div>
+        </div>
+        <div class="card">
+            <div class="label">运行时长</div>
+            <div class="value" id="uptimeValue" style="font-size:16px">--</div>
+        </div>
+    </div>
+
+    <canvas id="chartCanvas" width="800" height="300"></canvas>
+
+    <div class="controls">
+        <button class="btn btn-on" onclick="sendGpio('on')">开启硬件指示</button>
+        <button class="btn btn-off" onclick="sendGpio('off')">关闭硬件指示</button>
+    </div>
+    <div class="status-msg" id="gpioStatus"></div>
+
+    <script>
+        // ===== 折线图数据 =====
+        var tempHistory = [];   // 温度历史数据
+        var MAX_POINTS = 60;    // 最多显示 60 个点（60 秒）
+        var canvas = document.getElementById('chartCanvas');
+        var ctx = canvas.getContext('2d');
+
+        function drawChart() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // 画网格线 (修改：给 #eee 加了引号)
+            ctx.strokeStyle = '#eee';
+            ctx.lineWidth = 1;
+            for (var y = 0; y <= 5; y++) {
+                var yp = (canvas.height / 5) * y;
+                ctx.beginPath();
+                ctx.moveTo(0, yp);
+                ctx.lineTo(canvas.width, yp);
+                ctx.stroke();
+            }
+
+            if (tempHistory.length < 2) return;
+
+            // 计算温度范围
+            var minT = Math.min.apply(null, tempHistory);
+            var maxT = Math.max.apply(null, tempHistory);
+            if (maxT - minT < 5) { minT -= 3; maxT += 3; }  // 至少 5 度范围
+            var range = maxT - minT;
+
+            // 画折线 (修改：给 #4CAF50 加了引号)
+            ctx.strokeStyle = '#4CAF50';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            for (var i = 0; i < tempHistory.length; i++) {
+                var x = (canvas.width / (MAX_POINTS - 1)) * i;
+                var y = canvas.height - ((tempHistory[i] - minT) / range) * canvas.height;
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+
+            // 画最后一个点的圆点 (修改：给 #4CAF50 加了引号)
+            var lastX = (canvas.width / (MAX_POINTS - 1)) * (tempHistory.length - 1);
+            var lastY = canvas.height - ((tempHistory[tempHistory.length-1] - minT) / range) * canvas.height;
+            ctx.fillStyle = '#4CAF50';
+            ctx.beginPath();
+            ctx.arc(lastX, lastY, 4, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // ===== 每秒请求一次系统数据 =====
+        function fetchSysInfo() {
+            fetch('/api/sysinfo')
+                .then(function(res) { return res.json(); })
+                .then(function(data) {
+                    document.getElementById('tempValue').textContent = data.cpuTemp.toFixed(1);
+                    document.getElementById('memValue').textContent = data.memUsage.toFixed(1);
+                    document.getElementById('uptimeValue').textContent = data.uptime.text;
+
+                    // 温度加入历史
+                    tempHistory.push(data.cpuTemp);
+                    if (tempHistory.length > MAX_POINTS) tempHistory.shift();
+                    drawChart();
+                })
+                .catch(function(err) {
+                    console.log('fetch error:', err);
+                });
+        }
+
+        // ===== GPIO 控制 =====
+        function sendGpio(action) {
+            fetch('/api/gpio?action=' + action)
+                .then(function(res) { return res.json(); })
+                .then(function(data) {
+                    var msg = data.status === 'ok'
+                        ? '指示灯已' + (data.led === 'on' ? '开启' : '关闭')
+                        : '操作失败: ' + data.msg;
+                    document.getElementById('gpioStatus').textContent = msg;
+                })
+                .catch(function(err) {
+                    document.getElementById('gpioStatus').textContent = '请求失败: ' + err;
+                });
+        }
+
+        // ===== 启动定时器 =====
+        fetchSysInfo();              // 立即执行一次
+        setInterval(fetchSysInfo, 1000);  // 每秒刷新
+    </script>
+</body>
+</html>

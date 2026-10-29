@@ -3,6 +3,7 @@ using namespace std;
 const unordered_set<string> HttpRequest::DEFAULT_HTML{
                         "/index","/register","/login",
                         "/welcome","/video","/picture",
+                        "/dashboard",
 };
 const unordered_map<string,int> HttpRequest::DEFAULT_HTML_TAG{
     {"/register.html",0},{"/login.html",1},
@@ -58,6 +59,10 @@ bool HttpRequest::parse(Buffer& buff){//解析处理
 }
 //解析路径
 void HttpRequest::ParsePath_(){
+     // 如果是 /api/ 开头的，直接保留原样，不往后拼 .html
+    if (path_.rfind("/api/", 0) == 0) {
+        return; 
+    }
     if(path_ == "/"){
         path_ = "/index.html";
     }
@@ -165,11 +170,18 @@ void HttpRequest::ParseFromUrlencoded_(){
     }
 }
 bool HttpRequest::UserVerify(const string& name,const string& pwd,bool isLogin){//验证或注册用户
-    if(name == "" || pwd == " "){return false;}
+    if(name == "" || pwd == ""){return false;}
     LOG_INFO("Verify name:%s pwd:%s",name.c_str(),pwd.c_str());
+    
     MYSQL* sql;
     SqlConnRAII(&sql,SqlConnPool::Instance());
-    assert(sql);
+    // assert(sql); //修改处 2：注释掉断言，改为下方更安全的 if 判断 
+
+    //修改处 3：增加安全判断，防止连不上数据库时静默崩溃 
+    if(sql == nullptr) {
+        LOG_ERROR("MySQL Connection is NULL! Check your database status.");
+        return false;
+    }
 
     bool flag = false;
     unsigned int j = 0;
@@ -183,10 +195,19 @@ bool HttpRequest::UserVerify(const string& name,const string& pwd,bool isLogin){
     LOG_DEBUG("%s",order);
 
     if(mysql_query(sql,order)){
-        mysql_free_result(res);
+        // mysql_free_result(res); // 修改处 4：这里 res 还是空指针，释放会导致程序崩溃，必须删掉 
+        // 修改处 5：增加打印 MySQL 底层报错信息
+        LOG_ERROR("MySQL Query Error: %s", mysql_error(sql)); 
         return false;
     }
+    
     res = mysql_store_result(sql);
+    // === 修改处 6：增加结果集判断，防止空指针 ===
+    if (res == nullptr) {
+        LOG_ERROR("MySQL Store Result Error: %s", mysql_error(sql));
+        return false;
+    }
+
     j = mysql_num_fields(res);
     fields = mysql_fetch_fields(res);
 
@@ -207,6 +228,7 @@ bool HttpRequest::UserVerify(const string& name,const string& pwd,bool isLogin){
         }
     }
     mysql_free_result(res);
+    
     //注册行为且用户名未被使用
     if(!isLogin && flag == true){
         LOG_DEBUG("regirster!");
@@ -214,12 +236,16 @@ bool HttpRequest::UserVerify(const string& name,const string& pwd,bool isLogin){
         snprintf(order,256,"INSERT INTO user(username,password) VALUES('%s','%s')",name.c_str(),pwd.c_str());
         LOG_DEBUG("%s",order);
         if(mysql_query(sql,order)){
-            LOG_DEBUG("Insert error!");
+            // LOG_DEBUG("Insert error!"); // 修改处 7：改成 ERROR 级别并打印底层原因 
+            LOG_ERROR("Insert Error: %s", mysql_error(sql));
             flag = false;
+        } else {
+            flag = true; // 修改处 8：查询成功才设为 true，原代码写在了 if 外面会覆盖报错 
         }
-        flag = true;
     }
-    SqlConnPool::Instance()->FreeConn(sql);
+
+    // SqlConnPool::Instance()->FreeConn(sql); // 修改处 9：SqlConnRAII 会析构自动释放，手动释放会导致二次释放崩溃，必须删掉 
+
     LOG_DEBUG("UserVerify success!!");
     return flag;
 }
@@ -246,6 +272,26 @@ std::string HttpRequest::GetPost(const char* key) const{
     assert(key != nullptr);
     if(post_.count(key) == 1){
         return post_.find(key)->second;
+    }
+    return "";
+}
+//从浏览器的请求网址（URL）里，把参数给“抠”出来。
+std::string HttpRequest::GetQuery(const std::string& key) const {
+    size_t pos = path_.find('?');
+    if (pos == std::string::npos) return "";
+    std::string queryStr = path_.substr(pos + 1);
+    size_t start = 0;
+    while (start < queryStr.size()) {
+        size_t ampPos = queryStr.find('&', start);
+        std::string pair = (ampPos == std::string::npos) ? queryStr.substr(start) : queryStr.substr(start, ampPos - start);
+        size_t eqPos = pair.find('=');
+        if (eqPos != std::string::npos) {
+            std::string k = pair.substr(0, eqPos);
+            std::string v = pair.substr(eqPos + 1);
+            if (k == key) return v;
+        }
+        if (ampPos == std::string::npos) break;
+        start = ampPos + 1;
     }
     return "";
 }

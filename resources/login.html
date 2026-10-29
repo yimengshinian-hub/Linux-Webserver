@@ -8,6 +8,7 @@
         .container { background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); width: 300px; }
         h2 { text-align: center; color: #333; }
         input { width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ddd; border-radius: 5px; }
+        /* 按钮样式保留 */
         button { width: 100%; padding: 10px; background: #1877f2; color: white; border: none; border-radius: 5px; cursor: pointer; }
         button:hover { background: #166fe5; }
         .link { text-align: center; margin-top: 10px; }
@@ -17,12 +18,13 @@
 </head>
 <body>
     <div class="container">
-        <h2> 登录</h2>
+        <h2>登录</h2>
         <div id="message" class="message"></div>
         <form id="loginForm">
             <input type="text" id="username" placeholder="用户名" required>
             <input type="password" id="password" placeholder="密码" required>
-            <button type="submit">登录</button>
+            <!-- === 修改处 1：把 submit 改成 button，彻底切断浏览器默认提交 === -->
+            <button type="button" id="loginBtn">登录</button>
         </form>
         <div class="link">
             <a href="/register.html">还没有账号？去注册</a>
@@ -30,30 +32,44 @@
     </div>
 
     <script>
-        document.getElementById('loginForm').addEventListener('submit', async function(e) {
-            e.preventDefault();
+        // 1. 直接获取按钮和提示框
+        const submitBtn = document.getElementById('loginBtn');
+        const msgDiv = document.getElementById('message');
+    
+        // === 修改处 2：不监听 form 的 submit，直接监听按钮的 click ===
+        submitBtn.addEventListener('click', async function() {
+            // 禁用按钮防连点
+            submitBtn.disabled = true;
+            submitBtn.textContent = '登录中...';
+            msgDiv.textContent = ''; 
+    
             const username = document.getElementById('username').value;
             const password = document.getElementById('password').value;
             
             try {
-                const response = await fetch('/login.html', {
+                // 加时间戳，绝对不给浏览器任何缓存的机会
+                const response = await fetch('/login.html?t=' + new Date().getTime(), {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/x-www-form-urlencoded',
-                     },
+                    },
                     body: `username=${username}&password=${password}`
-                    });
-                const text = await response.text();
+                });
                 
-            if (text.includes('welcome') || text.includes('登录成功')) {
-                window.location.href = '/welcome.html';
-            } else {
-                document.getElementById('message').textContent = '登录失败，请检查用户名和密码';
-            }
+                // 核心判断
+                if (response.status === 200) {
+                    window.location.href = '/welcome.html'; // 只有 200 才跳
+                } else {
+                    msgDiv.textContent = '登录失败，请检查用户名和密码'; // 401 留在这里
+                    submitBtn.disabled = false; 
+                    submitBtn.textContent = '登录';
+                }
             } catch (error) {
-                document.getElementById('message').textContent = '登录失败，请重试';
+                msgDiv.textContent = '网络异常，请重试';
+                submitBtn.disabled = false;
+                submitBtn.textContent = '登录';
             }
         });
-        </script>
+    </script>
 </body>
 </html>
