@@ -1,0 +1,6 @@
+build_x86/
+build_arm/
+*.o
+log/
+*.log
+*.db
