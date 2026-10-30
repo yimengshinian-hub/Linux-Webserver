@@ -3,6 +3,7 @@ using namespace std;
 const unordered_set<string> HttpRequest::DEFAULT_HTML{
                         "/index","/register","/login",
                         "/welcome","/video","/picture",
+                        "/dashboard",
 };
 const unordered_map<string,int> HttpRequest::DEFAULT_HTML_TAG{
     {"/register.html",0},{"/login.html",1},
@@ -14,10 +15,16 @@ void HttpRequest::Init(){
     post_.clear();
 }
 bool HttpRequest::IsKeepAlive() const{
-    if(header_.count("Connection") == 1){
-        return header_.find("Connection")->second == "keep-alive" && version_ == "1.1";
+    /* HTTP 头名大小写不敏感（RFC 7230），存的时候统一转小写 */
+    std::unordered_map<std::string,std::string>::const_iterator it = header_.find("connection");
+    if(it == header_.end()){
+        return false;
     }
-    return false;
+    std::string conn = it->second;
+    for(size_t i = 0; i < conn.size(); ++i){
+        if(conn[i] >= 'A' && conn[i] <= 'Z'){ conn[i] = conn[i] - 'A' + 'a'; }
+    }
+    return conn == "keep-alive" && version_ == "1.1";
 }
 bool HttpRequest::parse(Buffer& buff){//解析处理
     const char CRLF[] = "\r\n";//行结束符标志（回车换行）
@@ -58,6 +65,17 @@ bool HttpRequest::parse(Buffer& buff){//解析处理
 }
 //解析路径
 void HttpRequest::ParsePath_(){
+     // 如果是 /api/ 开头的，直接保留原样，不往后拼 .html
+    if (path_.rfind("/api/", 0) == 0) {
+        return; 
+    }
+    /* 页面/静态请求：先剥掉 ?query 再做路由匹配。
+     * 否则 "/login.html?t=1750000000" 匹配不上 DEFAULT_HTML_TAG，
+     * 登录/注册的 POST 根本不会进入 UserVerify，最后 stat 失败返回 404 */
+    size_t qPos = path_.find('?');
+    if (qPos != std::string::npos) {
+        path_ = path_.substr(0, qPos);
+    }
     if(path_ == "/"){
         path_ = "/index.html";
     }
@@ -87,7 +105,13 @@ void HttpRequest::ParseHeader_(const string& line){
     regex patten("^([^:]*): ?(.*)$");
     smatch subMatch;
     if(regex_match(line,subMatch,patten)){
-        header_[subMatch[1]] = subMatch[2];//这里line举个例子：password:123456，subMatch[1] = password,subMatch[2] = 123456，know？
+        /* 头名统一转小写存储，避免 "Content-Type" / "content-type" 两种写法
+         * 命中不了同一份数据（Chrome fetch 发的是小写） */
+        std::string key = subMatch[1];
+        for(size_t i = 0; i < key.size(); ++i){
+            if(key[i] >= 'A' && key[i] <= 'Z'){ key[i] = key[i] - 'A' + 'a'; }
+        }
+        header_[key] = subMatch[2];//这里line举个例子：password:123456，subMatch[1] = password,subMatch[2] = 123456，know？
     }
     else{
         state_ = BODY;
@@ -101,13 +125,19 @@ void HttpRequest::ParseBody_(const string& line){
 }
 //16进制转化为10进制
 int HttpRequest::ConVerHex(char ch){
+    if(ch >= '0' && ch <= '9') return ch - '0';
     if(ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
     if(ch >= 'a' && ch <= 'f') return ch -'a' + 10;
-    return ch;
+    return -1;      // 非法字符，调用方据此放弃解码
 }
 //处理post请求
 void HttpRequest::ParsePost_(){
-    if(method_ == "POST" && header_["Content-Type"] == "application/x-www-form-urlencoded"){//头部内容为表单格式
+    /* 头名已统一小写；Content-Type 可能带 "; charset=UTF-8" 后缀，按前缀判断 */
+    std::unordered_map<std::string,std::string>::const_iterator ct = header_.find("content-type");
+    bool isForm = (ct != header_.end())
+               && ct->second.rfind("application/x-www-form-urlencoded", 0) == 0;
+
+    if(method_ == "POST" && isForm){//头部内容为表单格式
         ParseFromUrlencoded_();//POST请求体示例 （从url中解析编码
         if(DEFAULT_HTML_TAG.count(path_)){//如果是登陆注册的path
             int tag = DEFAULT_HTML_TAG.find(path_)->second;
@@ -122,107 +152,158 @@ void HttpRequest::ParsePost_(){
                 }
             }
         }
+        return;
+    }
+
+    /* POST 到登录/注册页却不是表单格式：明确判失败。
+     * 否则 path_ 保持原样，会以 200 返回登录页本身，
+     * 前端看到 200 就当成登录成功——等于任何密码都能进 */
+    if(method_ == "POST" && DEFAULT_HTML_TAG.count(path_)){
+        LOG_WARN("login/register POST without form content-type, rejected");
+        path_ = "/error.html";
     }
 }
 //从url中解析编码
 void HttpRequest::ParseFromUrlencoded_(){
     if(body_.size() == 0){return;}
-    string key,value;
-    int num = 0;
-    int n = body_.size();
-    int i = 0,j=0;//解析下标，j在前，i在后,中间是要操作的
-    for(;i<n;i++){
+
+    /* 第一步：先把 %XX 和 + 解码到一个独立字符串。
+     * 原实现在 body_ 上原地改下标，既会破坏后续 key/value 的偏移，
+     * 解码算法本身也是错的（%40 会被算成 "64" 而不是 "@"）。
+     * 拆成「先解码、再切分」两步，逻辑才站得住。 */
+    std::string decoded;
+    decoded.reserve(body_.size());
+    for(size_t i = 0; i < body_.size(); ++i){
         char ch = body_[i];
-        switch (ch)
-        {
-        case '=': //把等号前面的存入key
-            key = body_.substr(j,i-j);
-            j = i+1;
-            break;
-        case '+'://把+替换为空格
-            body_[i] = ' ';
-            break;
-        case '%'://将16进制编码的字符转为10进制
-            num = ConVerHex(body_[i+1] )* 16 + ConVerHex(body_[i+2]);
-            body_[i+2] = num % 10 + '0';
-            body_[i+1] = num / 10 + '0';
-            i += 2;
-            break;
-        case '&'://健值对分隔符
-            value = body_.substr(j,i-j);//把&前的复制给value
-            j = i + 1;
-            post_[key] = value;
-            LOG_DEBUG("%s = %s",key.c_str(),value.c_str());
-            break;
-        default:
-            break;
+        if(ch == '+'){
+            decoded += ' ';
         }
-    }
-    assert(j <= i);
-    if(post_.count(key) == 0 && j<i){
-        value = body_.substr(j,i-j);
-        post_[key] = value;
-    }
-}
-bool HttpRequest::UserVerify(const string& name,const string& pwd,bool isLogin){//验证或注册用户
-    if(name == "" || pwd == " "){return false;}
-    LOG_INFO("Verify name:%s pwd:%s",name.c_str(),pwd.c_str());
-    MYSQL* sql;
-    SqlConnRAII(&sql,SqlConnPool::Instance());
-    assert(sql);
-
-    bool flag = false;
-    unsigned int j = 0;
-    char order[256] = { 0 };
-    MYSQL_FIELD* fields = nullptr;
-    MYSQL_RES* res = nullptr;
-
-    if(!isLogin){flag = true;}
-    //查询用户及密码
-    snprintf(order,256,"SELECT username,password FROM user WHERE username ='%s' LIMIT 1",name.c_str());//数据库查询
-    LOG_DEBUG("%s",order);
-
-    if(mysql_query(sql,order)){
-        mysql_free_result(res);
-        return false;
-    }
-    res = mysql_store_result(sql);
-    j = mysql_num_fields(res);
-    fields = mysql_fetch_fields(res);
-
-    while(MYSQL_ROW row = mysql_fetch_row(res)){
-        LOG_DEBUG("MYSQL ROW: %s %s",row[0],row[1]);
-        string password(row[1]);
-        //注册行为且用户名未使用
-        if(isLogin){
-            if(pwd == password){flag = true;}
+        else if(ch == '%' && i + 2 < body_.size()){
+            int hi = ConVerHex(body_[i+1]);
+            int lo = ConVerHex(body_[i+2]);
+            if(hi >= 0 && lo >= 0){
+                decoded += static_cast<char>(hi * 16 + lo);
+                i += 2;
+            }
             else{
-                flag = false;
-                LOG_INFO("pwd error!");
+                decoded += ch;      // 非法的 %XX，原样保留
             }
         }
         else{
-            flag = false;
-            LOG_INFO("user used!");
+            decoded += ch;
         }
     }
-    mysql_free_result(res);
-    //注册行为且用户名未被使用
-    if(!isLogin && flag == true){
-        LOG_DEBUG("regirster!");
-        bzero(order,256);
-        snprintf(order,256,"INSERT INTO user(username,password) VALUES('%s','%s')",name.c_str(),pwd.c_str());
-        LOG_DEBUG("%s",order);
-        if(mysql_query(sql,order)){
-            LOG_DEBUG("Insert error!");
-            flag = false;
+
+    /* 第二步：按 & 切键值对，再按第一个 = 切 key/value */
+    size_t start = 0;
+    while(start <= decoded.size()){
+        size_t ampPos = decoded.find('&', start);
+        std::string pair = (ampPos == std::string::npos)
+                         ? decoded.substr(start)
+                         : decoded.substr(start, ampPos - start);
+        size_t eqPos = pair.find('=');
+        if(eqPos != std::string::npos && eqPos > 0){
+            std::string key = pair.substr(0, eqPos);
+            std::string value = pair.substr(eqPos + 1);
+            post_[key] = value;
+            LOG_DEBUG("%s = %s",key.c_str(),value.c_str());
         }
-        flag = true;
+        if(ampPos == std::string::npos) break;
+        start = ampPos + 1;
     }
-    SqlConnPool::Instance()->FreeConn(sql);
-    LOG_DEBUG("UserVerify success!!");
+}
+bool HttpRequest::UserVerify(const string& name,const string& pwd,bool isLogin){
+    if(name.empty() || pwd.empty()){ return false; }
+
+    sqlite3* db = nullptr;
+    if(sqlite3_open("webserver.db", &db) != SQLITE_OK){
+        LOG_ERROR("SQLite open failed: %s", sqlite3_errmsg(db));
+        sqlite3_close(db);
+        return false;
+    }
+    /* 线程池多线程同时 INSERT 时会撞 SQLITE_BUSY，让 SQLite 自己等一会儿 */
+    sqlite3_busy_timeout(db, 3000);
+
+    /* 首次运行、或从别的目录启动时，webserver.db 可能不存在/是空库。
+     * 不建表的话后面 SELECT 会报 "no such table: user"，
+     * 登录和注册会一起失败——这就是"换目录跑就登不上"的根因。 */
+    const char* initSql =
+        "CREATE TABLE IF NOT EXISTS user ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "username TEXT NOT NULL UNIQUE, "
+        "password TEXT NOT NULL)";
+    char* initErr = nullptr;
+    if(sqlite3_exec(db, initSql, nullptr, nullptr, &initErr) != SQLITE_OK){
+        LOG_ERROR("init table failed: %s", initErr ? initErr : "unknown");
+        sqlite3_free(initErr);
+        sqlite3_close(db);
+        return false;
+    }
+
+    bool flag = false;
+    sqlite3_stmt* stmt = nullptr;
+
+    /* ---------- 1. 查这个用户 ---------- */
+    const char* selSql = "SELECT password FROM user WHERE username = ? LIMIT 1";
+    if(sqlite3_prepare_v2(db, selSql, -1, &stmt, nullptr) != SQLITE_OK){
+        LOG_ERROR("prepare SELECT failed: %s", sqlite3_errmsg(db));
+        sqlite3_close(db);
+        return false;
+    }
+    /* 参数绑定，杜绝 SQL 注入；SQLITE_TRANSIENT 让 SQLite 自己拷贝一份 */
+    sqlite3_bind_text(stmt, 1, name.c_str(), -1, SQLITE_TRANSIENT);
+
+    int rc = sqlite3_step(stmt);
+
+    if(rc == SQLITE_ROW){
+        /* 用户已存在 */
+        const unsigned char* dbPwd = sqlite3_column_text(stmt, 0);
+        string password = dbPwd ? (const char*)dbPwd : "";
+        if(isLogin){
+            flag = (pwd == password);
+            if(!flag){ LOG_INFO("password error!"); }
+        }else{
+            flag = false;
+            LOG_INFO("user already exists!");
+        }
+        sqlite3_finalize(stmt);
+    }
+    else if(rc == SQLITE_DONE){
+        /* 用户不存在 */
+        sqlite3_finalize(stmt);
+        stmt = nullptr;
+
+        if(isLogin){
+            flag = false;
+            LOG_INFO("user not found!");
+        }else{
+            const char* insSql = "INSERT INTO user(username,password) VALUES(?,?)";
+            if(sqlite3_prepare_v2(db, insSql, -1, &stmt, nullptr) != SQLITE_OK){
+                LOG_ERROR("prepare INSERT failed: %s", sqlite3_errmsg(db));
+                sqlite3_close(db);
+                return false;
+            }
+            sqlite3_bind_text(stmt, 1, name.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 2, pwd.c_str(), -1, SQLITE_TRANSIENT);
+
+            if(sqlite3_step(stmt) == SQLITE_DONE){
+                flag = true;
+                LOG_INFO("register success!");
+            }else{
+                LOG_ERROR("INSERT failed: %s", sqlite3_errmsg(db));
+            }
+            sqlite3_finalize(stmt);
+        }
+    }
+    else{
+        LOG_ERROR("step error: %s", sqlite3_errmsg(db));
+        sqlite3_finalize(stmt);
+    }
+
+    sqlite3_close(db);
     return flag;
 }
+
 std::string HttpRequest::path() const{
     return path_;
 }
@@ -246,6 +327,26 @@ std::string HttpRequest::GetPost(const char* key) const{
     assert(key != nullptr);
     if(post_.count(key) == 1){
         return post_.find(key)->second;
+    }
+    return "";
+}
+//从浏览器的请求网址（URL）里，把参数给“抠”出来。
+std::string HttpRequest::GetQuery(const std::string& key) const {
+    size_t pos = path_.find('?');
+    if (pos == std::string::npos) return "";
+    std::string queryStr = path_.substr(pos + 1);
+    size_t start = 0;
+    while (start < queryStr.size()) {
+        size_t ampPos = queryStr.find('&', start);
+        std::string pair = (ampPos == std::string::npos) ? queryStr.substr(start) : queryStr.substr(start, ampPos - start);
+        size_t eqPos = pair.find('=');
+        if (eqPos != std::string::npos) {
+            std::string k = pair.substr(0, eqPos);
+            std::string v = pair.substr(eqPos + 1);
+            if (k == key) return v;
+        }
+        if (ampPos == std::string::npos) break;
+        start = ampPos + 1;
     }
     return "";
 }

@@ -7,13 +7,25 @@ WebServer::WebServer(int port,int trigMode,int timeoutMs,bool OptLinger,
                     port_(port),openLinger_(OptLinger),timeoutMs_(timeoutMs),isClose_(false),
                     timer_(new HeapTimer()),threadpool_(new ThreadPool(threadNum)),epoller_(new Epoller())
     {
-        srcDir_ = getcwd(nullptr,256);//获取当前目录位置
+        // 获取当前运行目录
+        srcDir_ = getcwd(nullptr, 256);
         assert(srcDir_);
-        strcat(srcDir_,"/resources/");//将resources添加到srcDir末尾
+        std::string pathStr(srcDir_);
+
+        // 自动向上层目录探测 resources 文件夹
+        // 如果当前目录下没有，就退到上一级找
+        if (pathStr.find("build_x86") != std::string::npos) {
+            // 如果路径里带有 build_x86，说明我们在子目录里
+            strcat(srcDir_, "/../resources/");
+        } 
+        else {
+            // 否则，默认在当前目录下找
+            strcat(srcDir_, "/resources/");
+        }
         HttpConn::userCount = 0;
         HttpConn::srcDir = srcDir_;
-        //初始化操作：
-        SqlConnPool::Instance()->Init("localhost",sqlPort,sqlUser,sqlPwd,dbName,connPoolNum);
+        // [ARM 移植] MySQL 连接池已移除，改用 SQLite（在 UserVerify 中直接打开 webserver.db）
+        // SqlConnPool::Instance()->Init("localhost",sqlPort,sqlUser,sqlPwd,dbName,connPoolNum);
         //初始化事件和初始化socket
         InitEventMode_(trigMode);
         if(!InitSocket_()){isClose_ = true;}
@@ -29,7 +41,7 @@ WebServer::WebServer(int port,int trigMode,int timeoutMs,bool OptLinger,
                             (connEvent_ & EPOLLET ? "ET": "LT"));
             LOG_INFO("LogSys level: %d", logLevel);
             LOG_INFO("srcDir: %s", HttpConn::srcDir);
-            LOG_INFO("SqlConnPool num: %d, ThreadPool num: %d", connPoolNum, threadNum);
+            LOG_INFO("SQLite mode, ThreadPool num: %d", threadNum);
             }
         }
     }
@@ -37,7 +49,8 @@ WebServer::WebServer(int port,int trigMode,int timeoutMs,bool OptLinger,
         close(listenFd_);
         isClose_ = true;
         free(srcDir_);//不用buf的话这里要手动释放
-        SqlConnPool::Instance()->ClosePool();
+        // [ARM 移植] MySQL 连接池已移除
+        // SqlConnPool::Instance()->ClosePool();
     }
     void WebServer::InitEventMode_(int trigMode){
         listenEvent_ = EPOLLRDHUP;//检测对方是否关闭了写操作

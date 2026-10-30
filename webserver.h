@@ -10,7 +10,6 @@
 #include"epoller.h"
 #include"heaptimer.h"
 #include"log.h"
-#include"sqlconnpool.h"
 #include"threadpool.h"
 #include"httpconn.h"
 

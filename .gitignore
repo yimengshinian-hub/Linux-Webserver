@@ -1,0 +1,17 @@
+# 编译产物
+build_arm/
+build_x86/
+*.o
+webserver
+
+# 日志文件
+log/
+
+# 数据库文件
+*.db
+
+# 编辑器配置
+.vscode/
+
+# 静态库（可选，如果不想传体积大的库文件就把下面这行加上）
+arm_libs/

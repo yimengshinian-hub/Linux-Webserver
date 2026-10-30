@@ -6,11 +6,9 @@
 #include<string>
 #include<regex>//正则表达式
 #include<errno.h>
-#include<mysql/mysql.h>//mysql
+#include<sqlite3.h>
 #include"buffer.h"
 #include"log.h"
-#include"sqlconnpool.h"
-
 class HttpRequest{
 public:
     enum PARSE_STATE{//状态机的状态
@@ -53,5 +51,9 @@ private:
     static const std::unordered_set<std::string> DEFAULT_HTML;
     static const std::unordered_map<std::string,int> DEFAULT_HTML_TAG;
     static int ConVerHex(char ch);//16进制转换为10进制
+    // 判断是否是 API 请求（以 /api/ 开头）
+    bool IsApiRequest() const { return path_.rfind("/api/", 0) == 0; }
+    // 解析 URL 里面的参数，比如 /api/gpio?action=on 里面的 action 就是 on
+    std::string GetQuery(const std::string& key) const;
 };
 #endif // !HTTP_REQUEST_H
