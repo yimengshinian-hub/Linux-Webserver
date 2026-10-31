@@ -186,7 +186,7 @@ Makefile 会自动探测：存在 libsqlite3.a 则静态链接，否则回退动
 ### x86 平台
 
 ```bash
-ab -n 10000 -c 100 http://127.0.0.1:1316/index.html
+ab -n 10000 -c 100 http://127.0.0.1:1316/welcome.html
 ```
 
 | 指标 | 数值 |
