@@ -5,9 +5,8 @@
 ## 📸 效果展示
 
 | 网页端监控与控制 (实机) | 物理硬件响应 |
+
 <img width="426" height="240" alt="演示" src="https://github.com/user-attachments/assets/67256195-f3df-49b8-a497-2f6082e1eced" />
-
-
 
 ## 硬件环境
 
